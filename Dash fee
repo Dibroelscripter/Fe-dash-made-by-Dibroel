@@ -1,0 +1,492 @@
+--[[
+    Fe Dash - Animação Manual (sem ID do Roblox)
+    Aperte Q ou toque no botão. Veja F9 pra logs.
+--]]
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+local CONFIG = {
+    Tecla = Enum.KeyCode.Q,
+    Forca = 90,
+    Duracao = 0.35,
+    Cooldown = 1.5,
+    CorDoEfeito = Color3.fromRGB(255, 60, 60),
+    TamanhoBotao = 70,
+    PosicaoInicial = UDim2.new(0.8, 0, 0.7, 0),
+    EfeitoDeParticula = true,
+    CameraShake = true,
+    RastroDeImagem = true,
+    Som = false, -- desligado (o ID anterior era inválido)
+    SomId = "",  -- coloque um ID de som válido aqui se quiser
+}
+
+local CooldownAtivo = false
+local DashAtivo = false
+local Character, Humanoid, RootPart
+
+local function atualizarRefs()
+    Character = LocalPlayer.Character
+    if not Character then return false end
+    Humanoid = Character:FindFirstChildOfClass("Humanoid")
+    RootPart = Character:FindFirstChild("HumanoidRootPart")
+    return Humanoid and RootPart
+end
+
+if not atualizarRefs() then
+    LocalPlayer.CharacterAdded:Wait()
+    task.wait(0.5)
+    atualizarRefs()
+end
+
+LocalPlayer.CharacterAdded:Connect(function(c)
+    Character = c
+    Humanoid = c:WaitForChild("Humanoid")
+    RootPart = c:WaitForChild("HumanoidRootPart")
+end)
+
+print("[Fe Dash] Iniciando...")
+
+-- ============================================================
+-- ANIMAÇÃO MANUAL (via Motor6D) — não usa ID
+-- ============================================================
+local function acharMotores()
+    if not Character then return {} end
+    local motores = {}
+    local isR15 = Character:FindFirstChild("UpperTorso") ~= nil
+    
+    local alvos
+    if isR15 then
+        alvos = {
+            "RightShoulder", "LeftShoulder",
+            "RightHip", "LeftHip",
+            "RightElbow", "LeftElbow",
+            "RightKnee", "LeftKnee",
+        }
+    else
+        alvos = {
+            "Right Shoulder", "Left Shoulder",
+            "Right Hip", "Left Hip",
+        }
+    end
+    
+    for _, nome in ipairs(alvos) do
+        for _, obj in ipairs(Character:GetDescendants()) do
+            if obj:IsA("Motor6D") and obj.Name == nome then
+                motores[nome] = { motor = obj, c0 = obj.C0 }
+                break
+            end
+        end
+    end
+    return motores
+end
+
+local function pararAnimacoesHumanoid()
+    if not Humanoid then return end
+    local anim = Humanoid:FindFirstChildOfClass("Animator")
+    if not anim then return end
+    for _, track in ipairs(anim:GetPlayingAnimationTracks()) do
+        pcall(function() track:Stop(0) end)
+    end
+end
+
+local function animarPersonagem()
+    if not Character or not Character.Parent then return end
+    
+    local motores = acharMotores()
+    if not next(motores) then
+        warn("[Fe Dash] Nenhum motor encontrado")
+        return
+    end
+    
+    -- Para animações pra não sobrescreverem nosso C0
+    pararAnimacoesHumanoid()
+    
+    -- Aplica pose com alpha 0..1
+    local function aplicarPose(alpha)
+        for nome, dados in pairs(motores) do
+            local m = dados.motor
+            if not m or not m.Parent then continue end
+            
+            local base = dados.c0
+            local novaC0 = base
+            
+            if nome:find("Shoulder") then
+                -- Braços vão pra trás e pra cima (pose de dash)
+                novaC0 = base * CFrame.Angles(math.rad(-110 * alpha), 0, math.rad(15 * alpha))
+            elseif nome:find("Hip") then
+                -- Uma perna pra frente, outra pra trás (passada larga)
+                local dir = nome:find("Right") and 1 or -1
+                novaC0 = base * CFrame.Angles(math.rad(45 * alpha * dir), 0, 0)
+            elseif nome:find("Elbow") then
+                novaC0 = base * CFrame.Angles(math.rad(-30 * alpha), 0, 0)
+            elseif nome:find("Knee") then
+                novaC0 = base * CFrame.Angles(math.rad(60 * alpha), 0, 0)
+            end
+            
+            m.C0 = novaC0
+        end
+    end
+    
+    task.spawn(function()
+        local subida = 0.08
+        local descida = 0.25
+        
+        -- Subir pose
+        local t0 = tick()
+        while tick() - t0 < subida do
+            local a = (tick() - t0) / subida
+            aplicarPose(a)
+            RunService.RenderStepped:Wait()
+        end
+        aplicarPose(1)
+        
+        -- Segurar
+        task.wait(math.max(0, CONFIG.Duracao - subida))
+        
+        -- Voltar
+        local t1 = tick()
+        while tick() - t1 < descida do
+            local a = 1 - ((tick() - t1) / descida)
+            aplicarPose(a)
+            RunService.RenderStepped:Wait()
+        end
+        
+        -- Restaurar C0 original
+        for _, dados in pairs(motores) do
+            if dados.motor and dados.motor.Parent then
+                dados.motor.C0 = dados.c0
+            end
+        end
+        print("[Fe Dash] ✅ Animação finalizada")
+    end)
+end
+
+-- ============================================================
+-- GUI / BOTÃO
+-- ============================================================
+local antigo = PlayerGui:FindFirstChild("FeDashGui")
+if antigo then antigo:Destroy() end
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "FeDashGui"
+screenGui.ResetOnSpawn = false
+screenGui.IgnoreGuiInset = true
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.Parent = PlayerGui
+
+local botao = Instance.new("TextButton")
+botao.Size = UDim2.new(0, CONFIG.TamanhoBotao, 0, CONFIG.TamanhoBotao)
+botao.Position = CONFIG.PosicaoInicial
+botao.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+botao.BackgroundTransparency = 0.15
+botao.BorderSizePixel = 0
+botao.Text = "Q"
+botao.TextColor3 = Color3.fromRGB(255, 255, 255)
+botao.TextScaled = true
+botao.Font = Enum.Font.GothamBold
+botao.AutoButtonColor = false
+botao.Active = true
+botao.Parent = screenGui
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(1, 0)
+corner.Parent = botao
+
+local stroke = Instance.new("UIStroke")
+stroke.Color = CONFIG.CorDoEfeito
+stroke.Thickness = 2
+stroke.Transparency = 0.2
+stroke.Parent = botao
+
+local grad = Instance.new("UIGradient")
+grad.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 60, 60)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(120, 20, 120)),
+})
+grad.Rotation = 45
+grad.Parent = botao
+
+local pad = Instance.new("UIPadding")
+pad.PaddingTop = UDim.new(0.15, 0)
+pad.PaddingBottom = UDim.new(0.15, 0)
+pad.PaddingLeft = UDim.new(0.15, 0)
+pad.PaddingRight = UDim.new(0.15, 0)
+pad.Parent = botao
+
+-- Arrastar
+local arrastando, moveu = false, false
+local inicioInput, posInicial
+
+botao.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+    or input.UserInputType == Enum.UserInputType.Touch then
+        arrastando = true
+        moveu = false
+        inicioInput = input.Position
+        posInicial = botao.Position
+    end
+end)
+
+botao.InputChanged:Connect(function(input)
+    if not arrastando then return end
+    if input.UserInputType == Enum.UserInputType.MouseMovement
+    or input.UserInputType == Enum.UserInputType.Touch then
+        local d = input.Position - inicioInput
+        if math.abs(d.X) > 5 or math.abs(d.Y) > 5 then moveu = true end
+        botao.Position = UDim2.new(
+            posInicial.X.Scale, posInicial.X.Offset + d.X,
+            posInicial.Y.Scale, posInicial.Y.Offset + d.Y
+        )
+    end
+end)
+
+botao.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+    or input.UserInputType == Enum.UserInputType.Touch then
+        arrastando = false
+    end
+end)
+
+-- Animação do botão ao clicar
+local function animarClique()
+    local encolher = TweenService:Create(botao,
+        TweenInfo.new(0.1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+        { Size = UDim2.new(0, CONFIG.TamanhoBotao * 0.8, 0, CONFIG.TamanhoBotao * 0.8) }
+    )
+    encolher:Play()
+    encolher.Completed:Wait()
+    TweenService:Create(botao,
+        TweenInfo.new(0.15, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+        { Size = UDim2.new(0, CONFIG.TamanhoBotao, 0, CONFIG.TamanhoBotao) }
+    ):Play()
+end
+
+local function iniciarPulso()
+    if not botao or not botao.Parent then return end
+    local p = TweenService:Create(botao,
+        TweenInfo.new(1, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+        { BackgroundTransparency = 0.35 }
+    )
+    p:Play()
+    return p
+end
+
+local pulsoAtual = iniciarPulso()
+
+-- ============================================================
+-- EFEITOS
+-- ============================================================
+local function criarTrail()
+    if not RootPart or not RootPart.Parent then return end
+    local a0 = Instance.new("Attachment")
+    a0.Position = Vector3.new(0, 1, 0)
+    a0.Parent = RootPart
+    local a1 = Instance.new("Attachment")
+    a1.Position = Vector3.new(0, -1, 0)
+    a1.Parent = RootPart
+    local trail = Instance.new("Trail")
+    trail.Attachment0 = a0
+    trail.Attachment1 = a1
+    trail.Lifetime = 0.5
+    trail.MinLength = 0
+    trail.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0),
+        NumberSequenceKeypoint.new(0.5, 0.3),
+        NumberSequenceKeypoint.new(1, 1),
+    })
+    trail.Color = ColorSequence.new(CONFIG.CorDoEfeito, Color3.fromRGB(255, 255, 255))
+    trail.Parent = RootPart
+    return trail, a0, a1
+end
+
+local function criarParticulas()
+    if not CONFIG.EfeitoDeParticula or not RootPart or not RootPart.Parent then return end
+    local e = Instance.new("ParticleEmitter")
+    e.Texture = "rbxassetid://243660364"
+    e.Color = ColorSequence.new(CONFIG.CorDoEfeito, Color3.fromRGB(255, 200, 100))
+    e.Size = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 2),
+        NumberSequenceKeypoint.new(1, 0),
+    })
+    e.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0.2),
+        NumberSequenceKeypoint.new(1, 1),
+    })
+    e.Lifetime = NumberRange.new(0.4, 0.7)
+    e.Speed = NumberRange.new(20, 40)
+    e.SpreadAngle = Vector2.new(180, 180)
+    e.Rate = 0
+    e.Parent = RootPart
+    e:Emit(30)
+    game:GetService("Debris"):AddItem(e, 1)
+end
+
+local function criarAfterimage()
+    if not CONFIG.RastroDeImagem or not Character or not Character.Parent then return end
+    task.spawn(function()
+        for i = 1, 4 do
+            if not Character or not Character.Parent or not RootPart or not RootPart.Parent then break end
+            local clone = Character:Clone()
+            clone.Name = "FeDash_Ghost"
+            clone.Parent = workspace
+            for _, obj in ipairs(clone:GetDescendants()) do
+                if obj:IsA("Script") or obj:IsA("LocalScript")
+                or obj:IsA("Animator") or obj:IsA("Sound")
+                or obj:IsA("ParticleEmitter") or obj:IsA("Trail")
+                or obj:IsA("Attachment") or obj:IsA("Decal")
+                or obj:IsA("Humanoid") then
+                    obj:Destroy()
+                elseif obj:IsA("BasePart") then
+                    obj.Anchored = true
+                    obj.CanCollide = false
+                    obj.Material = Enum.Material.Neon
+                    obj.Color = CONFIG.CorDoEfeito
+                    obj.Transparency = 0.4
+                end
+            end
+            task.spawn(function()
+                local info = TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+                for _, obj in ipairs(clone:GetDescendants()) do
+                    if obj:IsA("BasePart") then
+                        TweenService:Create(obj, info, { Transparency = 1 }):Play()
+                    end
+                end
+            end)
+            game:GetService("Debris"):AddItem(clone, 0.7)
+            task.wait(0.07)
+        end
+    end)
+end
+
+local function tremorCamera()
+    if not CONFIG.CameraShake then return end
+    local cam = workspace.CurrentCamera
+    if not cam then return end
+    task.spawn(function()
+        local dur = 0.3
+        local intens = 1.2
+        local ini = tick()
+        while tick() - ini < dur do
+            local f = intens * (1 - (tick() - ini) / dur)
+            cam.CFrame = cam.CFrame * CFrame.new(
+                (math.random() - 0.5) * f,
+                (math.random() - 0.5) * f,
+                0
+            )
+            RunService.RenderStepped:Wait()
+        end
+    end)
+end
+
+local function tocarSom()
+    if not CONFIG.Som then return end
+    if CONFIG.SomId == "" then return end
+    if not RootPart or not RootPart.Parent then return end
+    local s = Instance.new("Sound")
+    s.SoundId = CONFIG.SomId
+    s.Volume = 0.6
+    s.Parent = RootPart
+    s:Play()
+    game:GetService("Debris"):AddItem(s, 2)
+end
+
+-- ============================================================
+-- DASH
+-- ============================================================
+local function executarDash()
+    if CooldownAtivo or DashAtivo then return end
+    if not atualizarRefs() then return end
+    if Humanoid.Health <= 0 then return end
+    
+    CooldownAtivo = true
+    DashAtivo = true
+    print("[Fe Dash] 🚀 Dash!")
+    
+    task.spawn(animarClique)
+    stroke.Color = Color3.fromRGB(120, 120, 120)
+    botao.BackgroundTransparency = 0.6
+    if pulsoAtual then pulsoAtual:Cancel() end
+    
+    -- Direção
+    local dir = Humanoid.MoveDirection
+    if dir.Magnitude < 0.1 then
+        dir = RootPart.CFrame.LookVector
+    else
+        dir = dir.Unit
+    end
+    
+    -- 🎬 ANIMAÇÃO MANUAL
+    animarPersonagem()
+    
+    -- Efeitos
+    local trail, a0, a1 = criarTrail()
+    if trail then trail.Enabled = true end
+    criarParticulas()
+    criarAfterimage()
+    tremorCamera()
+    tocarSom()
+    
+    -- Impulso
+    local bv = Instance.new("BodyVelocity")
+    bv.MaxForce = Vector3.new(1e5, 0, 1e5)
+    bv.Velocity = dir * CONFIG.Forca
+    bv.Parent = RootPart
+    
+    task.spawn(function()
+        local ini = tick()
+        while tick() - ini < CONFIG.Duracao do
+            if not RootPart or not RootPart.Parent then break end
+            bv.Velocity = dir * CONFIG.Forca
+            RunService.Heartbeat:Wait()
+        end
+        if bv then bv:Destroy() end
+    end)
+    
+    task.delay(CONFIG.Duracao + 0.5, function()
+        if trail then trail.Enabled = false end
+        if a0 then a0:Destroy() end
+        if a1 then a1:Destroy() end
+        if trail then trail:Destroy() end
+    end)
+    
+    DashAtivo = false
+    
+    task.delay(CONFIG.Cooldown, function()
+        CooldownAtivo = false
+        stroke.Color = CONFIG.CorDoEfeito
+        botao.BackgroundTransparency = 0.15
+        pulsoAtual = iniciarPulso()
+    end)
+end
+
+-- Inputs
+botao.MouseButton1Click:Connect(function()
+    if not moveu then executarDash() end
+end)
+
+botao.TouchTap:Connect(function()
+    if not moveu then executarDash() end
+end)
+
+UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.KeyCode == CONFIG.Tecla then
+        executarDash()
+    end
+end)
+
+pcall(function()
+    game:GetService("StarterGui"):SetCore("SendNotification", {
+        Title = "Fe Dash",
+        Text = "Aperte Q ou toque no botão!",
+        Duration = 5,
+    })
+end)
+
+print("[Fe Dash] ✅ Carregado!")
